@@ -1,0 +1,267 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: async-jobs-postgres
+
+    environment:
+      POSTGRES_DB: async_jobs
+      POSTGRES_USER: async_user
+      POSTGRES_PASSWORD: async_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U async_user -d async_jobs"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+
+  redis:
+    image: redis:7-alpine
+    container_name: async-jobs-redis
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: async-jobs-kafka
+    hostname: kafka
+
+    ports:
+      - "9092:9092"
+
+    environment:
+      KAFKA_NODE_ID: 1
+
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_LISTENERS: >
+        PLAINTEXT://:9092,
+        CONTROLLER://:9093
+
+      KAFKA_ADVERTISED_LISTENERS: >
+        PLAINTEXT://kafka:9092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >
+        CONTROLLER:PLAINTEXT,
+        PLAINTEXT:PLAINTEXT
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: >
+        1@kafka:9093
+
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Не разрешаем consumer/producer
+      # случайно создавать topic.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+
+  # Одноразовый контейнер.
+  #
+  # Kafka поднялась → создаём jobs →
+  # контейнер заканчивает работу.
+  kafka-init:
+    image: apache/kafka:4.3.1
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    command:
+      [
+        "/opt/kafka/bin/kafka-topics.sh",
+        "--bootstrap-server",
+        "kafka:9092",
+        "--create",
+        "--if-not-exists",
+        "--topic",
+        "jobs",
+        "--partitions",
+        "3",
+        "--replication-factor",
+        "1"
+      ]
+
+
+  api:
+    build: .
+    container_name: async-jobs-api
+
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ]
+
+    environment:
+      POSTGRES_DSN: postgresql://async_user:async_password@postgres:5432/async_jobs
+      REDIS_URL: redis://redis:6379/0
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+
+  worker-1:
+    build: .
+
+    command:
+      [
+        "python",
+        "-m",
+        "workers.kafka_worker"
+      ]
+
+    environment:
+      POSTGRES_DSN: postgresql://async_user:async_password@postgres:5432/async_jobs
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WORKER_NAME: worker-1
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      kafka-init:
+        condition: service_completed_successfully
+
+
+  worker-2:
+    build: .
+
+    command:
+      [
+        "python",
+        "-m",
+        "workers.kafka_worker"
+      ]
+
+    environment:
+      POSTGRES_DSN: postgresql://async_user:async_password@postgres:5432/async_jobs
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WORKER_NAME: worker-2
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      kafka-init:
+        condition: service_completed_successfully
+
+
+  worker-3:
+    build: .
+
+    command:
+      [
+        "python",
+        "-m",
+        "workers.kafka_worker"
+      ]
+
+    environment:
+      POSTGRES_DSN: postgresql://async_user:async_password@postgres:5432/async_jobs
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WORKER_NAME: worker-3
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      kafka-init:
+        condition: service_completed_successfully
+  outbox-publisher:
+    build: .
+
+    command:
+      [
+        "python",
+        "outbox_publisher.py"
+      ]
+
+    environment:
+      POSTGRES_DSN: postgresql://async_user:async_password@postgres:5432/async_jobs
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PUBLISHER_NAME: outbox-publisher
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      kafka-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  kafka_data:
+

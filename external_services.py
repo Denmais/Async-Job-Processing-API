@@ -32,9 +32,7 @@ async def check_fraud(
         f"[fraud] START user={user_id}"
     )
 
-    await asyncio.sleep(
-        random.uniform(0.5, 1.8)
-    )
+    await asyncio.sleep(10)
 
     if random.random() < 0.1:
         raise TemporaryServiceError(

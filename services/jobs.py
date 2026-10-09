@@ -1,19 +1,20 @@
-import asyncio
-
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from application.commands import (
     CreateJobCommand,
 )
+
 from domain.enums import JobStatus
+
 from domain.models import (
     Job,
     Merchant,
     Transaction,
 )
-from repositories.jobs import (
-    SqliteJobRepository,
+
+from repositories.postgres_jobs import (
+    PostgresJobRepository,
 )
 
 
@@ -21,11 +22,9 @@ class JobService:
 
     def __init__(
         self,
-        repository: SqliteJobRepository,
-        queue: asyncio.Queue,
+        repository: PostgresJobRepository,
     ):
         self.repository = repository
-        self.queue = queue
 
     async def create_job(
         self,
@@ -61,16 +60,33 @@ class JobService:
             updated_at=now,
         )
 
-        await self.repository.save(
-            job
-        )
+        # ОДНА Postgres transaction:
+        #
+        # jobs
+        # +
+        # outbox_events
 
-        await self.queue.put(
-            job.id
+        await self.repository.save_with_outbox(
+            job
         )
 
         return job
 
-    async def get_job(self, job_id: UUID) -> Job | None:
+    async def get_job(
+        self,
+        job_id: UUID,
+    ) -> Job | None:
 
-        return await self.repository.get(job_id)
+        return await self.repository.get(
+            job_id
+        )
+
+    async def get_side_effects(
+        self,
+        job_id: UUID,
+    ):
+
+        return await (
+            self.repository
+            .get_side_effects(job_id)
+        )

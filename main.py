@@ -1,77 +1,47 @@
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from api.routes import router
-from repositories.jobs import SqliteJobRepository
+
+from config import POSTGRES_DSN
+
+from repositories.postgres_jobs import (
+    PostgresJobRepository,
+)
+
 from services.jobs import JobService
-from workers.jobs import job_worker
-
-
-WORKERS_COUNT = 3
-EXTERNAL_CONCURRENCY_LIMIT = 4
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("LIFESPAN START")
+async def lifespan(
+    app: FastAPI,
+):
 
-    repository = SqliteJobRepository(
-        db_path="jobs.db"
+    print("API START")
+
+    repository = PostgresJobRepository(
+        dsn=POSTGRES_DSN
     )
 
     await repository.connect()
 
-    queue = asyncio.Queue()
-
-    external_semaphore = asyncio.Semaphore(
-        EXTERNAL_CONCURRENCY_LIMIT
-    )
-
     service = JobService(
-        repository=repository,
-        queue=queue,
+        repository=repository
     )
 
     app.state.repository = repository
-    app.state.queue = queue
     app.state.job_service = service
-    app.state.external_semaphore = external_semaphore
-
-    worker_tasks = [
-        asyncio.create_task(
-            job_worker(
-                worker_id=worker_id,
-                queue=queue,
-                repository=repository,
-                semaphore=external_semaphore,
-            )
-        )
-        for worker_id in range(
-            1,
-            WORKERS_COUNT + 1
-        )
-    ]
-
-    print("job_service created:", app.state.job_service)
-    print(f"Started {WORKERS_COUNT} workers")
 
     try:
+
         yield
 
     finally:
-        print("LIFESPAN STOP")
-
-        for task in worker_tasks:
-            task.cancel()
-
-        await asyncio.gather(
-            *worker_tasks,
-            return_exceptions=True,
-        )
 
         await repository.close()
+
+        print("API STOP")
 
 
 app = FastAPI(
@@ -79,4 +49,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(router)
+app.include_router(
+    router
+)
